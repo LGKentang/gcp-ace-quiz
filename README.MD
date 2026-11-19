@@ -43,6 +43,23 @@ The app runs in two ways:
 - **Original set** (70) — the original questions, tagged by domain, with outdated items updated for 2025–2026 product changes (Artifact Registry, Spot VMs, Cloud Run functions, etc.).
 - **2026 research set** (600) — original questions written against the current (2026) exam guide, including newly added topics such as Workload/Workforce Identity Federation, Cloud NGFW policies, Agent Runtime, GPUs vs TPUs, Managed Lustre, Database Center and Gemini Cloud Assist. Background research is in [`reports/`](reports/).
 
+### Managing questions
+
+Questions live in `data.json`. Users' progress refers to questions by `id`, so follow these rules to keep everyone's history intact:
+
+- **Retire, don't delete.** A retired question stays in `data.json` so past results still show it (with a "Retired" label), but it never appears in a new mock, practice or mistake review.
+- **Never reuse an `id`** for a different question.
+- **Fixing a typo or explanation?** Keep the `id`. **Changing the options or the correct answer?** Retire the old question and add the new one with a new `id`.
+
+```bash
+python3 tools/questions.py stats                         # active / retired counts per bank and domain
+python3 tools/questions.py retire  --bank research-2026  # hide the AI-written bank
+python3 tools/questions.py retire  --ids 12,r26-d2-05 --reason "ambiguous"
+python3 tools/questions.py restore --bank research-2026  # bring it back
+```
+
+Then redeploy (`docker compose up -d --build`). If a question is ever deleted outright, past results say how many questions can no longer be shown, and the recorded scores don't change.
+
 ---
 
 ## 🐳 Self-hosting with Docker + Cloudflare Tunnel

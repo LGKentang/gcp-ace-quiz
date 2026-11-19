@@ -216,8 +216,15 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 });
 
 /* ---------- Question pools ---------- */
+// A question with "retired": true stays in data.json so past results can still show it,
+// but it is never used in a new mock, practice or mistake review.
+const isActive = (q) => !q.retired;
+const isPractisable = (qid) => QMAP.has(qid) && isActive(QMAP.get(qid));
+function activeQuestions() {
+  return QUESTIONS.filter(isActive);
+}
 function allBanks() {
-  return [...new Set(QUESTIONS.map(bankOf))];
+  return [...new Set(activeQuestions().map(bankOf))];
 }
 function selectedBanks() {
   const banks = allBanks();
@@ -225,7 +232,7 @@ function selectedBanks() {
   return chosen.length ? chosen : banks;
 }
 function poolFor({ banks = selectedBanks(), domain = 'all' } = {}) {
-  return QUESTIONS.filter((q) => banks.includes(bankOf(q)) &&
+  return QUESTIONS.filter((q) => isActive(q) && banks.includes(bankOf(q)) &&
     (domain === 'all' || (domain === 'none' ? !q.domain : q.domain === Number(domain))));
 }
 function pickWeighted(pool, n) {
@@ -248,7 +255,7 @@ function pickWeighted(pool, n) {
 }
 function missedQids() {
   return Object.entries(store.qstats)
-    .filter(([qid, st]) => st.last === false && QMAP.has(qid))
+    .filter(([qid, st]) => st.last === false && isPractisable(qid))
     .map(([qid]) => qid);
 }
 
@@ -356,7 +363,7 @@ function renderHome() {
     <section class="welcome">
       <div>
         <h1>Associate Cloud Engineer prep</h1>
-        <p class="muted">${QUESTIONS.length} questions · progress saved in this browser</p>
+        <p class="muted">${activeQuestions().length} questions · ${MODE === 'server' ? 'progress saved to your account' : 'progress saved in this browser'}</p>
       </div>
     </section>
 
@@ -366,7 +373,7 @@ function renderHome() {
       <div class="chips">
         ${banks.map((b) => `
           <label class="chip-toggle"><input type="checkbox" name="bank" value="${esc(b)}" ${sel.includes(b) ? 'checked' : ''}>
-          <span>${esc(bankLabel(b))} · ${QUESTIONS.filter((q) => bankOf(q) === b).length}</span></label>`).join('')}
+          <span>${esc(bankLabel(b))} · ${activeQuestions().filter((q) => bankOf(q) === b).length}</span></label>`).join('')}
       </div>
     </div>` : ''}
 
@@ -883,13 +890,21 @@ function renderResults(id) {
     return;
   }
   const passed = a.pct >= PASS_MARK;
-  const wrong = a.items.filter((i) => !i.ok && QMAP.has(i.qid)).map((i) => i.qid);
   const flagged = new Set(a.flagged || []);
+  // Questions still in data.json (active or retired) can be shown; deleted ones can't.
+  const shown = a.items.filter((i) => QMAP.has(i.qid));
+  const missingCount = a.items.length - shown.length;
+  const retiredCount = shown.filter((i) => QMAP.get(i.qid).retired).length;
+  const wrongShown = shown.filter((i) => !i.ok);
+  const flaggedShown = shown.filter((i) => flagged.has(i.qid));
+  // Only active questions can go into a new session.
+  const wrong = wrongShown.map((i) => i.qid).filter(isPractisable);
+  const retakeable = a.items.map((i) => i.qid).filter(isPractisable);
   let filter = 'all';
 
   const draw = () => {
-    const items = a.items.filter((i) => QMAP.has(i.qid) &&
-      (filter === 'all' || (filter === 'wrong' && !i.ok) || (filter === 'flagged' && flagged.has(i.qid))));
+    const items = shown.filter((i) =>
+      filter === 'all' || (filter === 'wrong' && !i.ok) || (filter === 'flagged' && flagged.has(i.qid)));
     app.querySelector('#review-list').innerHTML = items.length ? items.map((it) => {
       const q = QMAP.get(it.qid);
       const n = a.items.indexOf(it) + 1;
@@ -899,7 +914,8 @@ function renderResults(id) {
           <strong>Question ${n}</strong>
           <span class="status ${it.ok ? 'good' : 'bad'}"><span aria-hidden="true">${it.ok ? '✓' : '✕'}</span>${it.ok ? 'Correct' : it.chosen === null ? 'Not answered' : 'Incorrect'}</span>
         </div>
-        <div class="muted small">${d ? esc(d.short) : 'Untagged'}${flagged.has(it.qid) ? ' · ⚑ flagged' : ''}</div>
+        <div class="muted small">${d ? esc(d.short) : 'Untagged'}${flagged.has(it.qid) ? ' · ⚑ flagged' : ''}${
+          q.retired ? ' · <span class="pill retired" title="No longer used in new sessions">Retired</span>' : ''}</div>
         <p class="ri-q">${esc(q.question)}</p>
         <ul>${q.options.map((o, i) => {
           const isC = i === q.correct, isMine = i === it.chosen;
@@ -935,7 +951,7 @@ function renderResults(id) {
       </div>
       <div class="btn-row" style="margin-top:1.25rem">
         ${wrong.length ? `<button class="btn" data-act="retry-wrong">Practise the ${wrong.length} you missed</button>` : ''}
-        <button class="btn secondary" data-act="retry-all">Retake these questions</button>
+        ${retakeable.length ? `<button class="btn secondary" data-act="retry-all">Retake ${retakeable.length === a.items.length ? 'these questions' : `the ${retakeable.length} still available`}</button>` : ''}
         <a class="btn secondary" href="#/home">New session</a>
       </div>
     </section>
@@ -949,11 +965,13 @@ function renderResults(id) {
       <div class="section-head">
         <h2>Review answers</h2>
         <div class="btn-row" role="group" aria-label="Filter questions">
-          <button class="ghost" data-filter="all">All (${a.items.length})</button>
-          <button class="ghost" data-filter="wrong">Incorrect (${wrong.length})</button>
-          ${flagged.size ? `<button class="ghost" data-filter="flagged">Flagged (${flagged.size})</button>` : ''}
+          <button class="ghost" data-filter="all">All (${shown.length})</button>
+          <button class="ghost" data-filter="wrong">Incorrect (${wrongShown.length})</button>
+          ${flaggedShown.length ? `<button class="ghost" data-filter="flagged">Flagged (${flaggedShown.length})</button>` : ''}
         </div>
       </div>
+      ${retiredCount ? `<p class="review-note"><span aria-hidden="true">ⓘ</span>${retiredCount} of these question${retiredCount === 1 ? ' has' : 's have'} since been retired. ${retiredCount === 1 ? "It's" : "They're"} shown for your record but won't appear in new sessions.</p>` : ''}
+      ${missingCount ? `<p class="review-note"><span aria-hidden="true">ⓘ</span>${missingCount} question${missingCount === 1 ? ' from this session is' : 's from this session are'} no longer in the question bank, so ${missingCount === 1 ? "it can't" : "they can't"} be shown. Your score above still counts ${missingCount === 1 ? 'it' : 'them'}.</p>` : ''}
       <div id="review-list"></div>
     </section>
   `;
@@ -961,9 +979,9 @@ function renderResults(id) {
   app.querySelectorAll('[data-filter]').forEach((b) => b.addEventListener('click', () => { filter = b.dataset.filter; draw(); }));
   app.querySelector('[data-act="retry-wrong"]')?.addEventListener('click', () =>
     startSession({ mode: 'review', title: 'Retry missed questions', qids: shuffle(wrong) }));
-  app.querySelector('[data-act="retry-all"]').addEventListener('click', () => {
-    const qids = shuffle(a.items.map((i) => i.qid).filter((q) => QMAP.has(q)));
-    if (a.mode === 'mock') startSession({ mode: 'mock', title: `Mock exam retake (${qids.length} Q)`, qids, minutes: Math.max(1, Math.round(a.items.length * 120 / 50)) });
+  app.querySelector('[data-act="retry-all"]')?.addEventListener('click', () => {
+    const qids = shuffle(retakeable);
+    if (a.mode === 'mock') startSession({ mode: 'mock', title: `Mock exam retake (${qids.length} Q)`, qids, minutes: Math.max(1, Math.round(qids.length * 120 / 50)) });
     else startSession({ mode: 'practice', title: 'Retake: ' + a.title.replace(/^Retake: /, ''), qids });
   });
   draw();
