@@ -11,7 +11,7 @@ COPY server/requirements.txt server/requirements.txt
 RUN pip install -r server/requirements.txt
 
 COPY server/__init__.py server/main.py server/
-COPY index.html script.js style.css theme.js data.json static/
+COPY index.html script.js style.css theme.js favicon.svg data.json static/
 
 # Run as an unprivileged user; SQLite lives on the /data volume.
 RUN useradd --system --uid 10001 --home-dir /app --shell /usr/sbin/nologin ace \

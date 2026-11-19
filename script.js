@@ -1010,7 +1010,7 @@ function renderLogin(msg = '', kind = '') {
   app.innerHTML = `
     <section class="login-wrap">
       <div class="card login-card">
-        <div class="brand-mark big" aria-hidden="true">☁</div>
+        <img class="brand-mark big" src="favicon.svg" alt="" width="56" height="56">
         <h1>ACE Prep</h1>
         <p class="muted">Practice questions and timed mock exams for the Google Cloud Associate Cloud Engineer certification. Sign in with your Google account to save your scores.</p>
         <div id="gsi-button" class="gsi-button"></div>
