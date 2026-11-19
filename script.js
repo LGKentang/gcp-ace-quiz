@@ -391,26 +391,29 @@ function renderHome() {
 
     <section class="section">
       <div class="section-head"><h2>Start studying</h2><span class="muted small">${pool.length} questions in selected banks</span></div>
-      <div class="grid grid-3">
+      <div class="mode-grid">
         <div class="card mode-card">
-          <div class="mode-icon" aria-hidden="true">⏱</div>
-          <h3>Mock exam</h3>
-          <p>Timed, weighted by exam domain. Answers and explanations are revealed at the end, like the real thing.</p>
-          <div class="controls">
+          <div class="mode-head"><span class="mode-icon" aria-hidden="true">⏱</span><h3>Mock exam</h3></div>
+          <p class="mode-desc">Timed and weighted by exam domain. Answers and explanations are revealed at the end, like the real thing.</p>
+          <div class="mode-body">
             <label class="field">Length
               <select id="mock-size">
                 ${Object.entries(MOCK_SIZES).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('')}
               </select>
             </label>
+            <ul class="mode-facts">
+              <li><span aria-hidden="true">⚖</span>Drawn 20 / 30 / 30 / 20 by domain</li>
+              <li><span aria-hidden="true">⚑</span>Flag questions and jump around</li>
+              <li><span aria-hidden="true">◎</span>Aim for ${PASS_MARK}% or higher</li>
+            </ul>
           </div>
-          <button class="btn" data-act="mock">Start mock exam</button>
+          <button class="btn mode-btn" data-act="mock">Start mock exam</button>
         </div>
 
         <div class="card mode-card">
-          <div class="mode-icon" aria-hidden="true">✎</div>
-          <h3>Practice</h3>
-          <p>Pick an answer and see straight away whether you were right, with the explanation.</p>
-          <div class="controls">
+          <div class="mode-head"><span class="mode-icon" aria-hidden="true">✎</span><h3>Practice</h3></div>
+          <p class="mode-desc">Pick an answer and see straight away whether you were right, with the explanation.</p>
+          <div class="mode-body">
             <label class="field">Domain
               <select id="prac-domain">
                 <option value="all" data-n="${pool.length}">All domains (${pool.length})</option>
@@ -419,28 +422,31 @@ function renderHome() {
               </select>
             </label>
             <div class="field">
-              <label for="prac-count">Number of questions</label>
+              <label for="prac-count">Number of questions <span class="muted" id="prac-avail" aria-live="polite"></span></label>
               <div class="count-row">
                 <input type="number" id="prac-count" min="1" max="${pool.length}" step="1" inputmode="numeric"
-                  value="${Math.min(store.prefs.pracCount || 20, pool.length || 1)}">
+                  value="${Math.min(store.prefs.pracCount || 20, pool.length || 1)}" aria-describedby="prac-avail">
                 <div class="presets" role="group" aria-label="Quick picks">
                   ${[10, 20, 50].map((n) => `<button type="button" class="preset" data-count="${n}">${n}</button>`).join('')}
                   <button type="button" class="preset" data-count="all">All</button>
                 </div>
               </div>
-              <span class="muted small" id="prac-avail"></span>
             </div>
           </div>
-          <button class="btn" data-act="practice">Start practice</button>
+          <button class="btn mode-btn" data-act="practice">Start practice</button>
         </div>
 
         <div class="card mode-card">
-          <div class="mode-icon" aria-hidden="true">↺</div>
-          <h3>Review mistakes</h3>
-          <p>${missed.length
-            ? `${missed.length} question${missed.length === 1 ? '' : 's'} you got wrong the last time you saw ${missed.length === 1 ? 'it' : 'them'}. Get one right and it drops off this list.`
-            : 'Questions you get wrong will collect here so you can drill them.'}</p>
-          <button class="btn" data-act="review" ${missed.length ? '' : 'disabled'}>Review ${missed.length || ''} mistakes</button>
+          <div class="mode-head"><span class="mode-icon" aria-hidden="true">↺</span><h3>Review mistakes</h3></div>
+          <p class="mode-desc">Drill the questions you got wrong the last time you saw them. Get one right and it drops off the list.</p>
+          <div class="mode-body">
+            <div class="review-count"><span class="big">${missed.length}</span><span class="muted">question${missed.length === 1 ? '' : 's'} to review</span></div>
+            ${missed.length ? `<ul class="mode-facts">${DOMAINS.map((d) => {
+              const n = missed.filter((qid) => QMAP.get(qid).domain === d.id).length;
+              return n ? `<li><span aria-hidden="true">•</span>${esc(d.short)}: ${n}</li>` : '';
+            }).join('')}</ul>` : '<p class="muted small" style="margin:0">Questions you get wrong will collect here.</p>'}
+          </div>
+          <button class="btn mode-btn" data-act="review" ${missed.length ? '' : 'disabled'}>${missed.length ? `Review ${missed.length} mistake${missed.length === 1 ? '' : 's'}` : 'Nothing to review yet'}</button>
         </div>
       </div>
     </section>
@@ -490,7 +496,7 @@ function renderHome() {
     countInput.max = String(Math.max(1, max));
     const v = Number(countInput.value);
     if (v > max) countInput.value = String(max);
-    app.querySelector('#prac-avail').textContent = `1–${max} · ${max} available in this domain`;
+    app.querySelector('#prac-avail').textContent = `· ${max} available`;
     app.querySelectorAll('.preset').forEach((b) => {
       const n = b.dataset.count === 'all' ? max : Number(b.dataset.count);
       b.disabled = b.dataset.count !== 'all' && n > max;
@@ -970,7 +976,9 @@ function renderHistory() {
   const list = store.attempts.slice().reverse();
   app.innerHTML = `
     <div class="section-head" style="margin-top:0">
-      <div><h1>History</h1><p class="muted" style="margin:0">${store.attempts.length} saved session${store.attempts.length === 1 ? '' : 's'}. Scores are stored in this browser only — export a backup to move them.</p></div>
+      <div><h1>History</h1><p class="muted" style="margin:0">${store.attempts.length} saved session${store.attempts.length === 1 ? '' : 's'}. ${MODE === 'server' && ME
+        ? `Saved to your account (${esc(ME.email)}) on the server. Export a backup to keep your own copy.`
+        : 'Scores are stored in this browser only — export a backup to move them.'}</p></div>
       <div class="btn-row">
         <button class="btn secondary" data-act="export">Export backup</button>
         <label class="btn secondary" style="cursor:pointer">Import backup<input type="file" accept="application/json,.json" id="import-file" hidden></label>
@@ -998,7 +1006,7 @@ function renderHistory() {
     try {
       const data = JSON.parse(await file.text());
       if (data.version !== 1 || !Array.isArray(data.attempts) || typeof data.qstats !== 'object') throw new Error('Not an ACE Prep backup file.');
-      if (!confirm(`Replace your current progress with this backup (${data.attempts.length} sessions)?`)) return;
+      if (!confirm(`Replace your current progress${MODE === 'server' ? ' on your account' : ''} with this backup (${data.attempts.length} sessions)?`)) return;
       const base = emptyStore();
       store = { ...base, attempts: data.attempts, qstats: data.qstats || {}, prefs: { ...base.prefs, ...(data.prefs || {}) }, session: null };
       saveStore();
@@ -1010,7 +1018,8 @@ function renderHistory() {
     }
   });
   app.querySelector('[data-act="reset"]').addEventListener('click', () => {
-    if (!confirm('Delete ALL saved scores, history and mistake tracking? This cannot be undone. (Tip: export a backup first.)')) return;
+    const where = MODE === 'server' ? ' from your account on the server' : '';
+    if (!confirm(`Delete ALL saved scores, history and mistake tracking${where}? This cannot be undone. (Tip: export a backup first.)`)) return;
     const prefs = store.prefs;
     store = { ...emptyStore(), prefs };
     saveStore();
@@ -1088,6 +1097,10 @@ async function onGoogleCredential(resp) {
 async function signOut() {
   if (sync.dirty) { clearTimeout(sync.timer); await pushState(); }
   try { await api('POST', 'api/auth/logout'); } catch (e) { /* already signed out */ }
+  if (!sync.dirty) {
+    // Progress is safely on the server; don't leave a copy on this device.
+    try { localStorage.removeItem(storageKey()); } catch (e) { /* ignore */ }
+  }
   if (window.google && window.google.accounts && window.google.accounts.id) window.google.accounts.id.disableAutoSelect();
   location.hash = '#/home';
   location.reload();
