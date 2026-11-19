@@ -10,8 +10,8 @@ const THEME_KEY = 'acePrep.theme';
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
 // Google does not publish the ACE passing score; 70% is a commonly used target.
 const PASS_MARK = 70;
-const MOCK_SIZES = { full: { n: 50, minutes: 120, label: 'Full mock · 50 questions · 2 hours' },
-                     half: { n: 25, minutes: 60, label: 'Half mock · 25 questions · 1 hour' } };
+const MOCK_SIZES = { full: { n: 50, minutes: 120, label: 'Full · 50 questions · 2 h' },
+                     half: { n: 25, minutes: 60, label: 'Half · 25 questions · 1 h' } };
 
 // Domains and approximate weightings from the official exam guide (live version, Nov 2026).
 const DOMAINS = [
@@ -413,17 +413,23 @@ function renderHome() {
           <div class="controls">
             <label class="field">Domain
               <select id="prac-domain">
-                <option value="all">All domains (${pool.length})</option>
-                ${domainCounts.map(({ d, n }) => `<option value="${d.id}" ${n ? '' : 'disabled'}>${d.id}. ${esc(d.name)} (${n})</option>`).join('')}
-                ${untagged ? `<option value="none">Untagged (${untagged})</option>` : ''}
+                <option value="all" data-n="${pool.length}">All domains (${pool.length})</option>
+                ${domainCounts.map(({ d, n }) => `<option value="${d.id}" data-n="${n}" title="${esc(d.name)}" ${n ? '' : 'disabled'}>Domain ${d.id}: ${esc(d.short)} (${n})</option>`).join('')}
+                ${untagged ? `<option value="none" data-n="${untagged}">Untagged (${untagged})</option>` : ''}
               </select>
             </label>
-            <label class="field">Questions
-              <select id="prac-count">
-                <option value="10">10</option><option value="20" selected>20</option>
-                <option value="40">40</option><option value="all">All</option>
-              </select>
-            </label>
+            <div class="field">
+              <label for="prac-count">Number of questions</label>
+              <div class="count-row">
+                <input type="number" id="prac-count" min="1" max="${pool.length}" step="1" inputmode="numeric"
+                  value="${Math.min(store.prefs.pracCount || 20, pool.length || 1)}">
+                <div class="presets" role="group" aria-label="Quick picks">
+                  ${[10, 20, 50].map((n) => `<button type="button" class="preset" data-count="${n}">${n}</button>`).join('')}
+                  <button type="button" class="preset" data-count="all">All</button>
+                </div>
+              </div>
+              <span class="muted small" id="prac-avail"></span>
+            </div>
           </div>
           <button class="btn" data-act="practice">Start practice</button>
         </div>
@@ -476,11 +482,41 @@ function renderHome() {
     if (qs.length < cfg.n) toast(`Only ${qs.length} questions available — mock shortened.`);
     startSession({ mode: 'mock', title: `Mock exam (${qs.length} Q)`, qids: qs.map((q) => q.id), minutes: Math.round(cfg.minutes * qs.length / cfg.n) || 1 });
   });
+  const domainSel = app.querySelector('#prac-domain');
+  const countInput = app.querySelector('#prac-count');
+  const available = () => Number(domainSel.selectedOptions[0]?.dataset.n || 0);
+  const syncCount = () => {
+    const max = available();
+    countInput.max = String(Math.max(1, max));
+    const v = Number(countInput.value);
+    if (v > max) countInput.value = String(max);
+    app.querySelector('#prac-avail').textContent = `1–${max} · ${max} available in this domain`;
+    app.querySelectorAll('.preset').forEach((b) => {
+      const n = b.dataset.count === 'all' ? max : Number(b.dataset.count);
+      b.disabled = b.dataset.count !== 'all' && n > max;
+      b.classList.toggle('active', Number(countInput.value) === n);
+      b.setAttribute('aria-pressed', Number(countInput.value) === n);
+    });
+  };
+  domainSel.addEventListener('change', syncCount);
+  countInput.addEventListener('input', syncCount);
+  app.querySelectorAll('.preset').forEach((b) => b.addEventListener('click', () => {
+    countInput.value = String(b.dataset.count === 'all' ? available() : b.dataset.count);
+    syncCount();
+  }));
+  syncCount();
+
   app.querySelector('[data-act="practice"]').addEventListener('click', () => {
-    const domain = app.querySelector('#prac-domain').value;
-    const countVal = app.querySelector('#prac-count').value;
-    let qs = shuffle(poolFor({ domain }));
-    if (countVal !== 'all') qs = qs.slice(0, Number(countVal));
+    const domain = domainSel.value;
+    const max = available();
+    const n = Math.floor(Number(countInput.value));
+    if (!Number.isFinite(n) || n < 1 || n > max) {
+      toast(`Enter a number of questions between 1 and ${max}.`);
+      countInput.focus();
+      return;
+    }
+    store.prefs.pracCount = n;
+    const qs = shuffle(poolFor({ domain })).slice(0, n);
     const d = domainById(Number(domain));
     startSession({ mode: 'practice', title: `Practice · ${d ? d.short : domain === 'none' ? 'Untagged' : 'All domains'}`, qids: qs.map((q) => q.id) });
   });
