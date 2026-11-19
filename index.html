@@ -4,50 +4,37 @@
 <meta name="google-site-verification" content="Dtlk3nsllAtc5KSiYkIFV6zoU3-6bZ1_rOyuFiDODkE" />
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Google Cloud Quiz</title>
-<style>
-  body {
-    font-family: Arial, sans-serif;
-    margin: 1em;
-    background: #f9f9f9;
-    color: #222;
-  }
-  article.question {
-    background: #fff;
-    border: 1px solid #ddd;
-    border-radius: 6px;
-    padding: 1em 1.2em;
-    margin-bottom: 1.2em;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.06);
-  }
-  h3 {
-    margin-top: 0;
-  }
-  ul {
-    list-style: none;
-    padding-left: 0;
-  }
-  ul li {
-    margin-bottom: 0.4em;
-  }
-  .answer {
-    background: #e6f7e6;
-    border-left: 4px solid #4caf50;
-    padding: 0.8em 1em;
-    margin-top: 1em;
-    font-size: 0.95em;
-  }
-</style>
+<title>ACE Prep · Google Cloud Associate Cloud Engineer practice</title>
+<link rel="stylesheet" href="style.css" />
+<script>
+  // Apply saved theme before first paint to avoid a flash.
+  try {
+    const t = JSON.parse(localStorage.getItem('acePrep.v1') || '{}')?.prefs?.theme;
+    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+  } catch (e) {}
+</script>
 </head>
 <body>
 
-<h1>Google Cloud Quiz</h1>
-<div id="content">
-  Loading questions...
-</div>
+<header class="topbar">
+  <a class="brand" href="#/home" aria-label="ACE Prep home">
+    <span class="brand-mark" aria-hidden="true">☁</span>
+    <span>ACE Prep</span>
+  </a>
+  <nav class="topnav" aria-label="Main">
+    <a href="#/home" data-nav="home">Dashboard</a>
+    <a href="#/history" data-nav="history">History</a>
+    <button type="button" id="theme-toggle" class="ghost" aria-label="Toggle colour theme">Theme: auto</button>
+  </nav>
+</header>
 
-<!-- Load the external script -->
+<main id="app" tabindex="-1">
+  <p class="loading">Loading questions…</p>
+</main>
+
+<div id="toast" role="status" aria-live="polite"></div>
+<div id="chart-tooltip" class="chart-tooltip" role="tooltip" hidden></div>
+
 <script src="script.js" defer></script>
-
 </body>
 </html>
