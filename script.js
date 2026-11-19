@@ -1076,7 +1076,7 @@ function renderLogin(msg = '', kind = '') {
     const dark = document.documentElement.dataset.theme === 'dark' ||
       (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
     window.google.accounts.id.renderButton(document.getElementById('gsi-button'),
-      { theme: dark ? 'filled_black' : 'outline', size: 'large', text: 'signin_with', shape: 'pill', width: 280 });
+      { theme: dark ? 'filled_black' : 'outline', size: 'large', text: 'signin_with', shape: 'pill', width: 280, locale: 'en' });
   }).catch(() => setLoginMsg("Couldn't load Google Sign-In. Check your connection or ad blocker, then reload.", 'bad'));
 }
 async function onGoogleCredential(resp) {

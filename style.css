@@ -386,11 +386,18 @@ body.signed-out .topnav a[data-nav] { display: none; }
 .sync-status.offline { color: var(--critical-text); font-weight: 600; }
 
 .login-wrap { display: grid; place-items: center; min-height: 65vh; }
-.login-card { max-width: 440px; width: 100%; text-align: center; padding: 2.25rem 2rem; }
+.login-card { max-width: 440px; width: 100%; text-align: center; padding: 2.25rem 2rem 2rem; }
+.login-card p { margin-bottom: 0; }
 .login-card h1 { margin-top: 0.75rem; }
 .brand-mark.big { width: 56px; height: 56px; border-radius: 13px; margin: 0 auto; }
-.gsi-button { display: flex; justify-content: center; min-height: 44px; margin: 1.5rem 0 0.75rem; }
-.login-msg { min-height: 1.5em; font-size: 0.92rem; margin: 0.5rem 0; }
+/* Google renders its button in an iframe. If the iframe's colour scheme differs from the page's
+   (page = dark, iframe = light), browsers paint an opaque white box behind it. Matching the
+   scheme here keeps the iframe transparent. */
+.gsi-button { display: flex; justify-content: center; min-height: 44px; margin: 1.5rem 0 0; color-scheme: light; }
+.gsi-button iframe { color-scheme: light; }
+.login-msg { font-size: 0.92rem; margin: 1rem 0 0; }
+.login-msg:empty { display: none; }
+.login-card > .muted.small:last-child { margin: 1rem 0 0; }
 .login-msg.bad { color: var(--critical-text); }
 .login-msg.warn { color: var(--warning-text); font-weight: 600; }
 
