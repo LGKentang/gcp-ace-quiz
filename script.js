@@ -5,7 +5,8 @@
    Vanilla JS, no build step. Progress is stored in localStorage.
    ========================================================================= */
 
-const STORAGE_KEY = 'acePrep.v1';
+const LEGACY_STORAGE_KEY = 'acePrep.v1';
+const THEME_KEY = 'acePrep.theme';
 const LETTERS = ['A', 'B', 'C', 'D', 'E', 'F'];
 // Google does not publish the ACE passing score; 70% is a commonly used target.
 const PASS_MARK = 70;
@@ -27,9 +28,16 @@ const BANK_LABELS = {
 const app = document.getElementById('app');
 let QUESTIONS = [];
 const QMAP = new Map();
-let store = loadStore();
+let store = emptyStore();
 let timerHandle = null;
 let keyHandler = null;
+
+// 'local' = static hosting, progress in this browser only.
+// 'server' = ACE Prep server: Google sign-in, progress synced to the account.
+let MODE = 'local';
+let CONFIG = {};
+let ME = null;
+const sync = { timer: null, dirty: false, inFlight: false, status: 'saved' };
 
 /* ---------- Utilities ---------- */
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -79,34 +87,130 @@ function level(p) {
 function emptyStore() {
   return { version: 1, attempts: [], qstats: {}, session: null, prefs: { theme: 'auto', banks: null } };
 }
+function storageKey() {
+  return MODE === 'server' && ME ? `${LEGACY_STORAGE_KEY}:u${ME.id}` : LEGACY_STORAGE_KEY;
+}
+function normalizeStore(s) {
+  if (!s || s.version !== 1 || !Array.isArray(s.attempts)) return null;
+  const base = emptyStore();
+  return { ...base, ...s, qstats: s.qstats || {}, prefs: { ...base.prefs, ...(s.prefs || {}) } };
+}
+function readLocal(key = storageKey()) {
+  try { return normalizeStore(JSON.parse(localStorage.getItem(key))); } catch (e) { return null; }
+}
 function loadStore() {
-  try {
-    const s = JSON.parse(localStorage.getItem(STORAGE_KEY));
-    if (s && s.version === 1) {
-      const base = emptyStore();
-      return { ...base, ...s, prefs: { ...base.prefs, ...(s.prefs || {}) } };
-    }
-  } catch (e) { /* fall through */ }
-  return emptyStore();
+  return readLocal() || emptyStore();
 }
 function saveStore() {
+  // Signed-out in server mode: nothing to save (and don't overwrite browser progress waiting to be imported).
+  if (MODE === 'server' && !ME) return;
+  store.updatedAt = Date.now();
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(store));
+    localStorage.setItem(storageKey(), JSON.stringify(store));
   } catch (e) {
-    toast('Could not save progress — browser storage is full or disabled.');
+    if (MODE === 'local') toast('Could not save progress — browser storage is full or disabled.');
   }
+  if (MODE === 'server') scheduleSync();
+}
+
+/* ---------- Server sync ---------- */
+async function api(method, url, body) {
+  const opts = { method, credentials: 'same-origin', headers: { 'X-Requested-With': 'fetch' } };
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = typeof body === 'string' ? body : JSON.stringify(body);
+  }
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => null);
+  if (!res.ok) {
+    const err = new Error((data && data.detail) || `HTTP ${res.status}`);
+    err.status = res.status;
+    err.data = data;
+    err.retryAfter = Number(res.headers.get('Retry-After')) || 0;
+    throw err;
+  }
+  return data;
+}
+function setSyncStatus(status) {
+  sync.status = status;
+  const el = document.getElementById('sync-status');
+  if (!el) return;
+  const labels = { saved: '✓ Saved', saving: 'Saving…', offline: '! Not saved — retrying' };
+  el.textContent = labels[status] || '';
+  el.className = 'sync-status ' + status;
+}
+function scheduleSync(delay = 1000) {
+  sync.dirty = true;
+  setSyncStatus('saving');
+  clearTimeout(sync.timer);
+  sync.timer = setTimeout(pushState, delay);
+}
+async function pushState() {
+  if (!sync.dirty || MODE !== 'server') return;
+  if (sync.inFlight) { scheduleSync(1500); return; }
+  sync.dirty = false;
+  sync.inFlight = true;
+  try {
+    await api('PUT', 'api/state', JSON.stringify(store));
+    if (!sync.dirty) setSyncStatus('saved');
+  } catch (err) {
+    sync.dirty = true;
+    if (err.status === 401) { toast('Your session ended — please sign in again.'); renderLogin(); return; }
+    setSyncStatus('offline');
+    clearTimeout(sync.timer);
+    // Rate limited: wait as long as the server asks. Otherwise retry in 10 s.
+    sync.timer = setTimeout(pushState, err.status === 429 ? Math.max(err.retryAfter, 2) * 1000 : 10000);
+  } finally {
+    sync.inFlight = false;
+  }
+}
+function flushSync() {
+  if (MODE !== 'server' || !sync.dirty) return;
+  const body = JSON.stringify(store);
+  // keepalive lets the request finish after the tab closes, but caps the body at 64 KB.
+  fetch('api/state', {
+    method: 'PUT', credentials: 'same-origin', keepalive: body.length < 60000, body,
+    headers: { 'X-Requested-With': 'fetch', 'Content-Type': 'application/json' },
+  }).then((r) => { if (r.ok) { sync.dirty = false; setSyncStatus('saved'); } }).catch(() => {});
+}
+window.addEventListener('pagehide', flushSync);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSync(); });
+
+async function loadServerState() {
+  const remote = await api('GET', 'api/state');
+  const cached = readLocal();
+  const serverState = normalizeStore(remote.state);
+  if (serverState) {
+    // Prefer a newer local copy (e.g. edits made while the network was down).
+    const serverTs = (remote.updatedAt || 0) * 1000;
+    store = cached && (cached.updatedAt || 0) > serverTs + 1000 ? cached : serverState;
+    if (store === cached) scheduleSync(0);
+  } else {
+    // First sign-in: bring along progress saved in this browser before accounts existed.
+    const legacy = cached || readLocal(LEGACY_STORAGE_KEY);
+    store = legacy || emptyStore();
+    if (legacy && legacy.attempts.length) {
+      toast(`Imported ${legacy.attempts.length} saved session${legacy.attempts.length === 1 ? '' : 's'} from this browser into your account.`);
+    }
+    if (legacy) scheduleSync(0);
+  }
+  try { localStorage.setItem(storageKey(), JSON.stringify(store)); } catch (e) { /* cache only */ }
 }
 
 /* ---------- Theme ---------- */
+function currentTheme() {
+  return store.prefs.theme || localStorage.getItem(THEME_KEY) || 'auto';
+}
 function applyTheme() {
-  const t = store.prefs.theme || 'auto';
+  const t = currentTheme();
   if (t === 'auto') delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = t;
+  try { localStorage.setItem(THEME_KEY, t); } catch (e) { /* ignore */ }
   document.getElementById('theme-toggle').textContent = 'Theme: ' + t;
 }
 document.getElementById('theme-toggle').addEventListener('click', () => {
   const order = ['auto', 'light', 'dark'];
-  store.prefs.theme = order[(order.indexOf(store.prefs.theme || 'auto') + 1) % order.length];
+  store.prefs.theme = order[(order.indexOf(currentTheme()) + 1) % order.length];
   saveStore();
   applyTheme();
 });
@@ -220,9 +324,11 @@ function route() {
   if (keyHandler) { document.removeEventListener('keydown', keyHandler); keyHandler = null; }
   const [, view, arg] = (location.hash || '#/home').split('/');
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('active', a.dataset.nav === (view || 'home')));
-  if (view === 'quiz' && store.session) renderQuiz();
+  if (MODE === 'server' && !ME) renderLogin();
+  else if (view === 'quiz' && store.session) renderQuiz();
   else if (view === 'results' && arg) renderResults(arg);
   else if (view === 'history') renderHistory();
+  else if (view === 'admin' && ME && ME.role === 'admin') (arg ? renderAdminUser(Number(arg)) : renderAdmin());
   else renderHome();
   window.scrollTo(0, 0);
 }
@@ -436,7 +542,7 @@ function domainMeters(agg) {
   }).join('')}</div>`;
 }
 
-function attemptsTable(list, { compact = false } = {}) {
+function attemptsTable(list, { compact = false, links = true } = {}) {
   if (!list.length) return `<div class="card chart-empty">No sessions yet. Your scores will appear here after you finish one.</div>`;
   return `<div class="card table-wrap" style="padding:0">
     <table>
@@ -453,7 +559,7 @@ function attemptsTable(list, { compact = false } = {}) {
           <td class="num">${a.correct}/${a.total}</td>
           ${compact ? '' : `<td class="num">${esc(fmtDuration(a.durationSec))}</td>`}
           <td><span class="status ${lv ? 'good' : 'bad'}"><span aria-hidden="true">${lv ? '✓' : '✕'}</span>${lv ? 'At target' : 'Below target'}</span></td>
-          <td><a href="#/results/${esc(a.id)}">Review</a></td>
+          <td>${links ? `<a href="#/results/${esc(a.id)}">Review</a>` : ''}</td>
         </tr>`;
       }).join('')}</tbody>
     </table></div>`;
@@ -878,10 +984,347 @@ function renderHistory() {
 }
 
 /* =========================================================================
+   Sign-in (server mode)
+   ========================================================================= */
+let gsiPromise = null;
+function loadGsi() {
+  if (window.google && window.google.accounts && window.google.accounts.id) return Promise.resolve();
+  return (gsiPromise ||= new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.async = true;
+    s.onload = resolve;
+    s.onerror = () => { gsiPromise = null; reject(new Error('load failed')); };
+    document.head.appendChild(s);
+  }));
+}
+function setLoginMsg(msg, kind = '') {
+  const el = document.getElementById('login-msg');
+  if (el) { el.textContent = msg; el.className = 'login-msg ' + kind; }
+}
+function renderLogin(msg = '', kind = '') {
+  ME = null;
+  stopTimer();
+  renderUserMenu();
+  const mode = CONFIG.registrationMode;
+  app.innerHTML = `
+    <section class="login-wrap">
+      <div class="card login-card">
+        <div class="brand-mark big" aria-hidden="true">☁</div>
+        <h1>ACE Prep</h1>
+        <p class="muted">Practice questions and timed mock exams for the Google Cloud Associate Cloud Engineer certification. Sign in with your Google account to save your scores.</p>
+        <div id="gsi-button" class="gsi-button"></div>
+        <p id="login-msg" class="login-msg ${esc(kind)}" role="status">${esc(msg)}</p>
+        ${mode === 'approval' ? '<p class="muted small">New accounts are approved by an admin before they can start.</p>'
+          : mode === 'invite' ? '<p class="muted small">This app is invite-only — ask an admin to add your Google account.</p>' : ''}
+      </div>
+    </section>`;
+  if (!CONFIG.googleClientId) {
+    setLoginMsg("Google sign-in isn't configured on this server yet (GOOGLE_CLIENT_ID is missing).", 'bad');
+    return;
+  }
+  loadGsi().then(() => {
+    window.google.accounts.id.initialize({
+      client_id: CONFIG.googleClientId, callback: onGoogleCredential,
+      auto_select: false, cancel_on_tap_outside: true, use_fedcm_for_prompt: true,
+    });
+    const dark = document.documentElement.dataset.theme === 'dark' ||
+      (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+    window.google.accounts.id.renderButton(document.getElementById('gsi-button'),
+      { theme: dark ? 'filled_black' : 'outline', size: 'large', text: 'signin_with', shape: 'pill', width: 280 });
+  }).catch(() => setLoginMsg("Couldn't load Google Sign-In. Check your connection or ad blocker, then reload.", 'bad'));
+}
+async function onGoogleCredential(resp) {
+  setLoginMsg('Signing in…');
+  try {
+    await api('POST', 'api/auth/google', { credential: resp.credential });
+    location.hash = '#/home';
+    location.reload();
+  } catch (err) {
+    const status = err.data && err.data.status;
+    if (status === 'pending') {
+      setLoginMsg(`Thanks — your account (${err.data.email}) is waiting for an admin to approve it. Sign in again once you've been approved.`, 'warn');
+    } else {
+      setLoginMsg(err.message, 'bad');
+    }
+  }
+}
+async function signOut() {
+  if (sync.dirty) { clearTimeout(sync.timer); await pushState(); }
+  try { await api('POST', 'api/auth/logout'); } catch (e) { /* already signed out */ }
+  if (window.google && window.google.accounts && window.google.accounts.id) window.google.accounts.id.disableAutoSelect();
+  location.hash = '#/home';
+  location.reload();
+}
+function renderUserMenu() {
+  const el = document.getElementById('user-menu');
+  document.body.classList.toggle('signed-out', MODE === 'server' && !ME);
+  if (!el) return;
+  if (MODE !== 'server' || !ME) { el.innerHTML = ''; return; }
+  el.innerHTML = `
+    ${ME.role === 'admin' ? '<a href="#/admin" data-nav="admin">Admin</a>' : ''}
+    <span id="sync-status" class="sync-status" aria-live="polite"></span>
+    <span class="who" title="${esc(ME.email)}">
+      ${ME.picture ? `<img class="avatar" src="${esc(ME.picture)}" alt="" referrerpolicy="no-referrer" width="26" height="26">` : ''}
+      <span class="who-name">${esc(ME.name || ME.email)}</span>
+    </span>
+    <button type="button" class="ghost" id="sign-out">Sign out</button>`;
+  setSyncStatus(sync.status);
+  el.querySelector('#sign-out').addEventListener('click', signOut);
+}
+
+/* =========================================================================
+   Admin: user management (server mode)
+   ========================================================================= */
+const STATUS_LABEL = { active: 'Active', pending: 'Pending', blocked: 'Blocked' };
+const MODE_LABEL = {
+  open: 'Open — any Google account can join',
+  approval: 'Approval — new accounts wait for an admin',
+  invite: 'Invite-only — only emails added here can join',
+};
+function avatarHtml(u, size = 32) {
+  return u.picture
+    ? `<img class="avatar" src="${esc(u.picture)}" alt="" referrerpolicy="no-referrer" width="${size}" height="${size}">`
+    : `<span class="avatar avatar-fallback" style="width:${size}px;height:${size}px" aria-hidden="true">${esc((u.name || u.email || '?')[0].toUpperCase())}</span>`;
+}
+function relTime(ts) {
+  if (!ts) return '—';
+  const ms = ts < 1e12 ? ts * 1000 : ts;
+  const d = (Date.now() - ms) / 1000;
+  if (d < 90) return 'just now';
+  if (d < 3600) return Math.round(d / 60) + ' min ago';
+  if (d < 86400) return Math.round(d / 3600) + ' h ago';
+  if (d < 86400 * 30) return Math.round(d / 86400) + ' days ago';
+  return fmtDate(ms, false);
+}
+function userActions(u) {
+  if (u.id === ME.id) return '<span class="muted small">You</span>';
+  if (u.isBootstrapAdmin) return '<span class="muted small" title="Set by ADMIN_EMAILS on the server">Server admin</span>';
+  const opts = [['view', 'View progress']];
+  if (u.status !== 'active') opts.push(['approve', u.status === 'blocked' ? 'Unblock' : 'Approve']);
+  if (u.status !== 'blocked') opts.push(['block', 'Block']);
+  opts.push(u.role === 'admin' ? ['makeUser', 'Remove admin'] : ['makeAdmin', 'Make admin']);
+  if (u.activeSessions) opts.push(['signout', `Sign out (${u.activeSessions} session${u.activeSessions === 1 ? '' : 's'})`]);
+  opts.push(['delete', 'Delete user…']);
+  return `<select class="user-action" data-id="${u.id}" aria-label="Actions for ${esc(u.email)}">
+    <option value="">Actions…</option>${opts.map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select>`;
+}
+async function adminAction(u, action) {
+  const who = u.name ? `${u.name} (${u.email})` : u.email;
+  const path = `api/admin/users/${u.id}`;
+  const steps = {
+    view: () => { nav('#/admin/' + u.id); return null; },
+    approve: () => api('PATCH', path, { status: 'active' }).then(() => `${who} can now sign in.`),
+    block: () => confirm(`Block ${who}? They'll be signed out and can't sign in until unblocked.`)
+      && api('PATCH', path, { status: 'blocked' }).then(() => `${who} is blocked.`),
+    makeAdmin: () => confirm(`Make ${who} an admin? Admins can manage every user.`)
+      && api('PATCH', path, { role: 'admin' }).then(() => `${who} is now an admin.`),
+    makeUser: () => api('PATCH', path, { role: 'user' }).then(() => `${who} is no longer an admin.`),
+    signout: () => api('DELETE', path + '/sessions').then((r) => `Signed ${who} out of ${r.revoked} session(s).`),
+    delete: () => confirm(`Delete ${who} and all of their saved progress? This can't be undone.`)
+      && api('DELETE', path).then(() => `${who} was deleted.`),
+  };
+  try {
+    const msg = await steps[action]();
+    if (msg) { toast(msg); renderAdmin(); }
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
+async function renderAdmin() {
+  app.innerHTML = '<p class="loading">Loading users…</p>';
+  let data, auditLog;
+  try {
+    [data, auditLog] = await Promise.all([api('GET', 'api/admin/users'), api('GET', 'api/admin/audit?limit=60')]);
+  } catch (err) {
+    app.innerHTML = `<div class="card chart-empty">Couldn't load users: ${esc(err.message)}</div>`;
+    return;
+  }
+  if (location.hash !== '#/admin') return;
+  const users = data.users;
+  const count = (fn) => users.filter(fn).length;
+  const pending = users.filter((u) => u.status === 'pending');
+
+  const row = (u) => {
+    const st = u.stats || {};
+    return `<tr data-search="${esc((u.name || '') + ' ' + u.email)}">
+      <td><div class="user-cell">${avatarHtml(u)}<div><div class="u-name">${esc(u.name || '—')}</div><div class="muted small">${esc(u.email)}</div></div></div></td>
+      <td><span class="pill ${u.role === 'admin' ? 'mock' : ''}">${u.role === 'admin' ? 'Admin' : 'User'}</span></td>
+      <td><span class="status ${u.status === 'active' ? 'good' : u.status === 'pending' ? 'warn' : 'bad'}">
+        <span aria-hidden="true">${u.status === 'active' ? '✓' : u.status === 'pending' ? '…' : '✕'}</span>${STATUS_LABEL[u.status]}</span>
+        ${u.neverSignedIn ? '<div class="muted small">Not signed in yet</div>' : ''}</td>
+      <td class="num">${st.mocks || 0}</td>
+      <td class="num">${st.bestMock == null ? '—' : st.bestMock + '%'}</td>
+      <td class="num">${st.avgLast5 == null ? '—' : st.avgLast5 + '%'}</td>
+      <td class="num">${st.answered ? st.answered.toLocaleString() : 0}</td>
+      <td>${esc(relTime(u.lastSeenAt || u.lastLoginAt))}</td>
+      <td>${userActions(u)}</td>
+    </tr>`;
+  };
+
+  app.innerHTML = `
+    <div class="section-head" style="margin-top:0">
+      <div><h1>Users</h1>
+        <p class="muted" style="margin:0">Sign-up mode: <strong>${esc(MODE_LABEL[data.registrationMode] || data.registrationMode)}</strong>${
+          data.allowedDomains.length ? ` · Allowed domains: <strong>${esc(data.allowedDomains.join(', '))}</strong>` : ''}</p>
+        <p class="muted small" style="margin:0.2rem 0 0">Change these with REGISTRATION_MODE and ALLOWED_EMAIL_DOMAINS on the server.</p></div>
+    </div>
+
+    <div class="tiles">
+      <div class="card tile"><div class="t-label">Active users</div><div class="t-value">${count((u) => u.status === 'active')}</div></div>
+      <div class="card tile"><div class="t-label">Waiting for approval</div><div class="t-value">${pending.length}</div></div>
+      <div class="card tile"><div class="t-label">Blocked</div><div class="t-value">${count((u) => u.status === 'blocked')}</div></div>
+      <div class="card tile"><div class="t-label">Admins</div><div class="t-value">${count((u) => u.role === 'admin')}</div></div>
+    </div>
+
+    ${pending.length ? `
+    <section class="section card pending-card">
+      <div class="section-head"><h2>Waiting for approval</h2><span class="muted small">${pending.length} request${pending.length === 1 ? '' : 's'}</span></div>
+      <div class="pending-list">${pending.map((u) => `
+        <div class="pending-row">
+          <div class="user-cell">${avatarHtml(u)}<div><div class="u-name">${esc(u.name || u.email)}</div>
+            <div class="muted small">${esc(u.email)} · asked ${esc(relTime(u.createdAt))}</div></div></div>
+          <div class="btn-row">
+            <button class="btn" data-quick="approve" data-id="${u.id}">Approve</button>
+            <button class="btn secondary" data-quick="block" data-id="${u.id}">Block</button>
+          </div>
+        </div>`).join('')}</div>
+    </section>` : ''}
+
+    <section class="section card">
+      <h2>Add a user</h2>
+      <form id="add-user" class="add-user">
+        <label class="field grow">Google account email
+          <input type="email" name="email" required placeholder="name@gmail.com" autocomplete="off"></label>
+        <label class="field">Role
+          <select name="role"><option value="user">User</option><option value="admin">Admin</option></select></label>
+        <button class="btn" type="submit">Add user</button>
+      </form>
+      <p class="muted small" style="margin:0.5rem 0 0">They can sign in with that Google account straight away. Adding someone who is pending or blocked approves them.</p>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>All users</h2>
+        <input type="search" id="user-filter" class="search" placeholder="Filter by name or email" aria-label="Filter users"></div>
+      <div class="card table-wrap" style="padding:0">
+        <table class="users-table">
+          <thead><tr><th>User</th><th>Role</th><th>Status</th><th class="num">Mocks</th><th class="num">Best</th>
+            <th class="num">Avg last 5</th><th class="num">Answered</th><th>Last seen</th><th></th></tr></thead>
+          <tbody>${users.map(row).join('')}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>Recent activity</h2><span class="muted small">Sign-ups and admin changes</span></div>
+      ${auditLog.entries.length ? `<div class="card table-wrap" style="padding:0"><table>
+        <thead><tr><th>When</th><th>By</th><th>Action</th><th>User</th><th>Details</th></tr></thead>
+        <tbody>${auditLog.entries.map((e) => `<tr>
+          <td>${esc(relTime(e.at))}</td><td>${esc(e.actor_email || '—')}</td><td><code>${esc(e.action)}</code></td>
+          <td>${esc(e.target_email || '—')}</td><td class="muted">${esc(e.detail || '')}</td></tr>`).join('')}</tbody>
+      </table></div>` : '<div class="card chart-empty">No activity yet.</div>'}
+    </section>
+  `;
+
+  const byId = new Map(users.map((u) => [String(u.id), u]));
+  app.querySelectorAll('.user-action').forEach((sel) => sel.addEventListener('change', () => {
+    const action = sel.value;
+    sel.value = '';
+    if (action) adminAction(byId.get(sel.dataset.id), action);
+  }));
+  app.querySelectorAll('[data-quick]').forEach((b) => b.addEventListener('click', () => adminAction(byId.get(b.dataset.id), b.dataset.quick)));
+  app.querySelector('#user-filter').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    app.querySelectorAll('.users-table tbody tr').forEach((tr) => {
+      tr.hidden = q && !tr.dataset.search.toLowerCase().includes(q);
+    });
+  });
+  app.querySelector('#add-user').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    try {
+      await api('POST', 'api/admin/users', { email: String(f.get('email')).trim(), role: f.get('role') });
+      toast(`${f.get('email')} can now sign in.`);
+      renderAdmin();
+    } catch (err) {
+      toast(err.message);
+    }
+  });
+}
+
+async function renderAdminUser(id) {
+  app.innerHTML = '<p class="loading">Loading…</p>';
+  let data;
+  try {
+    data = await api('GET', `api/admin/users/${id}/state`);
+  } catch (err) {
+    app.innerHTML = `<div class="card chart-empty">${esc(err.message)} <a href="#/admin">Back to users</a></div>`;
+    return;
+  }
+  if (location.hash !== '#/admin/' + id) return;
+  const u = data.user;
+  const attempts = (data.state && Array.isArray(data.state.attempts)) ? data.state.attempts : [];
+  const mocks = attempts.filter((a) => a.mode === 'mock');
+  const answered = attempts.reduce((n, a) => n + (a.total || 0), 0);
+  const correct = attempts.reduce((n, a) => n + (a.correct || 0), 0);
+  const best = mocks.length ? Math.max(...mocks.map((a) => a.pct)) : null;
+  const last5 = mocks.slice(-5);
+  app.innerHTML = `
+    <p><a href="#/admin">← Users</a></p>
+    <section class="card">
+      <div class="user-cell big">${avatarHtml(u, 48)}
+        <div><h1 style="margin:0">${esc(u.name || u.email)}</h1>
+          <div class="muted">${esc(u.email)} · ${u.role === 'admin' ? 'Admin' : 'User'} · ${STATUS_LABEL[u.status]}</div>
+          <div class="muted small">Progress last saved ${esc(relTime(data.updatedAt))}</div></div></div>
+    </section>
+    <div class="tiles">
+      <div class="card tile"><div class="t-label">Mock exams</div><div class="t-value">${mocks.length}</div><div class="t-sub">${attempts.length - mocks.length} practice sessions</div></div>
+      <div class="card tile"><div class="t-label">Best mock</div><div class="t-value">${best === null ? '—' : best + '%'}</div><div class="t-sub">Target ${PASS_MARK}%</div></div>
+      <div class="card tile"><div class="t-label">Average, last 5 mocks</div><div class="t-value">${last5.length ? Math.round(last5.reduce((n, a) => n + a.pct, 0) / last5.length) + '%' : '—'}</div></div>
+      <div class="card tile"><div class="t-label">Questions answered</div><div class="t-value">${answered.toLocaleString()}</div><div class="t-sub">${answered ? pct(correct, answered) + '% correct' : '—'}</div></div>
+    </div>
+    <section class="section card">
+      <div class="section-head"><h2>Accuracy by domain</h2><span class="muted small">All sessions</span></div>
+      ${domainMeters(aggregateDomains(attempts))}
+    </section>
+    <section class="section">
+      <div class="section-head"><h2>Sessions</h2></div>
+      ${attemptsTable(attempts.slice().reverse(), { links: false })}
+    </section>`;
+}
+
+/* =========================================================================
    Boot
    ========================================================================= */
 async function boot() {
   applyTheme();
+  try {
+    const res = await fetch('api/config', { cache: 'no-store' });
+    const cfg = res.ok ? await res.json().catch(() => null) : null;
+    if (cfg && cfg.mode === 'server') { MODE = 'server'; CONFIG = cfg; }
+  } catch (e) { /* static hosting: no API */ }
+
+  if (MODE === 'server') {
+    try {
+      ME = (await api('GET', 'api/me')).user;
+    } catch (err) {
+      if (err.status === 401) { renderLogin(); return; }
+      app.innerHTML = `<div class="card chart-empty">Couldn't reach the server (${esc(err.message)}). Reload to try again.</div>`;
+      return;
+    }
+    try {
+      await loadServerState();
+    } catch (err) {
+      app.innerHTML = `<div class="card chart-empty">Couldn't load your saved progress (${esc(err.message)}). Reload to try again.</div>`;
+      return;
+    }
+  } else {
+    store = loadStore();
+  }
+  applyTheme();
+  renderUserMenu();
+
   try {
     const res = await fetch('data.json', { cache: 'no-cache' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);

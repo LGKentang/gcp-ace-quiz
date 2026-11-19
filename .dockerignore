@@ -1,0 +1,10 @@
+.git
+.env
+*.md
+*.MD
+research_notes
+reports
+server/test_main.py
+server/requirements-dev.txt
+**/__pycache__
+bu.txt

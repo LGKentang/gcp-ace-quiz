@@ -1,0 +1,36 @@
+# ACE Prep + Cloudflare Tunnel.
+#   cp .env.example .env   # fill it in
+#   docker compose up -d --build
+#
+# The app is not published on any host port: the only way in is through the
+# Cloudflare Tunnel. In the Cloudflare dashboard, give the tunnel a Public
+# Hostname (e.g. ace.example.com) whose service is:  http://app:8000
+
+services:
+  app:
+    build: .
+    image: ace-prep:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/ace.db
+    volumes:
+      - ace-data:/data
+    expose:
+      - "8000"
+    # Uncomment to also reach it directly from the server itself (e.g. for debugging):
+    # ports:
+    #   - "127.0.0.1:8000:8000"
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  ace-data:

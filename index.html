@@ -6,13 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>ACE Prep · Google Cloud Associate Cloud Engineer practice</title>
 <link rel="stylesheet" href="style.css" />
-<script>
-  // Apply saved theme before first paint to avoid a flash.
-  try {
-    const t = JSON.parse(localStorage.getItem('acePrep.v1') || '{}')?.prefs?.theme;
-    if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
-  } catch (e) {}
-</script>
+<script src="theme.js"></script>
 </head>
 <body>
 
@@ -24,6 +18,7 @@
   <nav class="topnav" aria-label="Main">
     <a href="#/home" data-nav="home">Dashboard</a>
     <a href="#/history" data-nav="history">History</a>
+    <span id="user-menu" class="user-menu"></span>
     <button type="button" id="theme-toggle" class="ghost" aria-label="Toggle colour theme">Theme: auto</button>
   </nav>
 </header>
